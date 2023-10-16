@@ -1,79 +1,69 @@
 pipeline {
-    agent any
-    environment {
-        //be sure to replace "bhavukm" with your own Docker Hub username
-        DOCKER_IMAGE_NAME = "bhavukm/train-schedule"
-    }
+
+    agent { label 'sl2' }
+	
+
+	environment {	
+		DOCKERHUB_CREDENTIALS=credentials('dockerloginid')
+	}
+	
     stages {
-        stage('Build') {
+        stage('SCM_Checkout') {
             steps {
-                echo 'Running build automation'
-                sh './gradlew build --no-daemon'
-                archiveArtifacts artifacts: 'dist/trainSchedule.zip'
+                echo 'Perform SCM Checkout'
+				git 'https://github.com/prahladyogi01/cicd-pipeline-train-schedule-autodeploy.git'
             }
         }
         stage('Build Docker Image') {
-            when {
-                branch 'master'
+            steps {
+				sh 'sudo docker version'
+				sh "sudo docker build -t prahladyogi/cicdpipeline:${BUILD_NUMBER} ."
+				sh 'sudo docker image list'
+				sh "sudo docker tag prahladyogi/cicdpipeline:${BUILD_NUMBER} prahladyogi/cicdpipeline:latest"
             }
+        }
+        stage('Approve - push Image to dockerhub'){
+            steps{
+                
+                //----------------send an approval prompt-------------
+                script {
+                   env.APPROVED_DEPLOY = input message: 'User input required Choose "yes" | "Abort"'
+                       }
+                //-----------------end approval prompt------------
+            }
+        }
+		stage('Login2DockerHub') {
+
+			steps {
+				sh 'echo $DOCKERHUB_CREDENTIALS_PSW | sudo docker login -u $DOCKERHUB_CREDENTIALS_USR --password-stdin'
+			}
+		}
+		stage('Publish_to_Docker_Registry') {
+			steps {
+				sh "sudo docker push prahladyogi/cicdpipeline:latest"
+			}
+		}
+
+        stage('Approve - Deploy to Kubernetes'){
+            steps{
+                
+                //----------------send an approval prompt-------------
+                script {
+                   env.APPROVED_DEPLOY = input message: 'User input required Choose "yes" | "Abort"'
+                       }
+                //-----------------end approval prompt------------
+            }
+        }
+        stage('Deploy Kubernetes') {
             steps {
                 script {
-                    app = docker.build(DOCKER_IMAGE_NAME)
-                    app.inside {
-                        sh 'echo Hello, World!'
-                    }
-                }
+                sshPublisher(publishers: [sshPublisherDesc(configName: 'k8master', transfers: [sshTransfer(cleanRemote: false, excludes: '', execCommand: 'sudo kubectl apply  -f train-schedule-kube.yml', execTimeout: 120000, flatten: false, makeEmptyDirs: false, noDefaultExcludes: false, patternSeparator: '[, ]+', remoteDirectory: '/home/ubuntu', remoteDirectorySDF: false, removePrefix: '.', sourceFiles: '*.yaml')], usePromotionTimestamp: false, useWorkspaceInPromotion: false, verbose: false)])
+            }   
             }
         }
-        stage('Push Docker Image') {
-            when {
-                branch 'master'
-            }
-            steps {
-                script {
-                    docker.withRegistry('https://registry.hub.docker.com', 'docker_hub_login') {
-                        app.push("${env.BUILD_NUMBER}")
-                        app.push("latest")
-                    }
-                }
-            }
-        }
-        stage('CanaryDeploy') {
-            when {
-                branch 'master'
-            }
-            environment { 
-                CANARY_REPLICAS = 1
-            }
-            steps {
-                kubernetesDeploy(
-                    kubeconfigId: 'kubeconfig',
-                    configs: 'train-schedule-kube-canary.yml',
-                    enableConfigSubstitution: true
-                )
-            }
-        }
-        stage('DeployToProduction') {
-            when {
-                branch 'master'
-            }
-            environment { 
-                CANARY_REPLICAS = 0
-            }
-            steps {
-                input 'Deploy to Production?'
-                milestone(1)
-                kubernetesDeploy(
-                    kubeconfigId: 'kubeconfig',
-                    configs: 'train-schedule-kube-canary.yml',
-                    enableConfigSubstitution: true
-                )
-                kubernetesDeploy(
-                    kubeconfigId: 'kubeconfig',
-                    configs: 'train-schedule-kube.yml',
-                    enableConfigSubstitution: true
-                )
-            }
-        }
+
+
+
+ 
     }
 }
